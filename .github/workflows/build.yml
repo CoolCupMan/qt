@@ -1,0 +1,87 @@
+name: Build VST3 + Standalone
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # only used to attach files to a release when a v* tag is pushed
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            extra: ""
+            app: "WAV Remixer.exe"
+          - name: macOS
+            os: macos-latest
+            extra: '"-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0'
+            app: "WAV Remixer.app"
+          - name: Linux
+            os: ubuntu-22.04
+            extra: -G Ninja
+            app: "WAV Remixer"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DREMIX_BUILD_CLI=ON ${{ matrix.extra }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Collect outputs
+        shell: bash
+        run: |
+          art="build/WavRemixer_artefacts/Release"
+          mkdir -p dist/VST3 dist/App
+          cp -R "$art/VST3/WAV Remixer.vst3" dist/VST3/
+          cp -R "$art/Standalone/${{ matrix.app }}" dist/App/
+          cli=$(find build/RemixCli_artefacts -type f \( -name RemixCli -o -name RemixCli.exe \) | head -1)
+          [ -n "$cli" ] && cp "$cli" dist/App/
+          cp README.md dist/VST3/ && cp README.md dist/App/
+          ls -R dist | head -50
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAV-Remixer-VST3-${{ matrix.name }}
+          path: dist/VST3
+
+      - name: Upload standalone app
+        uses: actions/upload-artifact@v4
+        with:
+          name: WAV-Remixer-App-${{ matrix.name }}
+          path: dist/App
+
+      - name: Zip for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          cd dist
+          7z a "../WAV-Remixer-VST3-${{ matrix.name }}.zip" VST3/* > /dev/null
+          7z a "../WAV-Remixer-App-${{ matrix.name }}.zip" App/* > /dev/null
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: WAV-Remixer-*.zip
